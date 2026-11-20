@@ -29,7 +29,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       # Pin to a commit SHA in production use.
-      - uses: alanfeng99/cyberplux-skills@v0
+      - uses: revtel/cyberplux-skills@v0
         with:
           api-key: ${{ secrets.CYBERPLUX_API_KEY }}
           # register: true   # first run only, if the project is not registered yet
