@@ -1,0 +1,328 @@
+#!/usr/bin/env bash
+# cyberplux-sbom: keep a project's dependency list on CyberPlux (https://cyberplux.com)
+# in sync with its lockfiles, so new advisories and known vulnerabilities in
+# those exact versions reach you.
+#
+#   cyberplux-sbom login                     store a member API key (read from stdin)
+#   cyberplux-sbom init --project-key KEY    write .cyberplux in the repository root
+#   cyberplux-sbom register                  create / update the project on CyberPlux
+#   cyberplux-sbom sync [--if-changed]       generate an SBOM and upload it
+#   cyberplux-sbom status                    show config, key source and whether lockfiles changed
+#   cyberplux-sbom install-git-hooks         sync after commits and pulls on the tracked branch
+#
+# Requires: bash, git, curl, gzip, and one SBOM generator (syft, trivy, cdxgen,
+# or npx for npm-only projects). MIT licensed.
+set -euo pipefail
+
+VERSION="0.1.0"
+BASE_URL="${CYBERPLUX_URL:-https://cyberplux.com}"
+BASE_URL="${BASE_URL%/}"
+KEY_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/cyberplux/api-key"
+CONFIG_NAME=".cyberplux"
+
+QUIET=0
+say() { [ "$QUIET" = 1 ] || printf '%s\n' "$*" >&2; }
+die() { printf 'cyberplux-sbom: %s\n' "$*" >&2; exit 1; }
+
+# Lockfiles whose change means the installed dependency set changed.
+LOCKFILES="package-lock.json npm-shrinkwrap.json yarn.lock pnpm-lock.yaml bun.lock bun.lockb
+poetry.lock Pipfile.lock uv.lock pdm.lock requirements.txt requirements-*.txt
+go.sum Cargo.lock Gemfile.lock composer.lock packages.lock.json gradle.lockfile
+pubspec.lock mix.lock Package.resolved Podfile.lock"
+
+repo_root() { git rev-parse --show-toplevel 2>/dev/null || die "not inside a git repository"; }
+
+cfg() { # cfg <key> [default]
+  local v
+  v=$(git config -f "$ROOT/$CONFIG_NAME" --get "project.$1" 2>/dev/null || true)
+  printf '%s' "${v:-${2:-}}"
+}
+
+load_config() {
+  ROOT=$(repo_root)
+  [ -f "$ROOT/$CONFIG_NAME" ] || return 1
+  PROJECT_KEY=$(cfg key)
+  ENVIRONMENT=$(cfg environment production)
+  TEAM_ID=$(cfg team-id)
+  SCAN_PATH=$(cfg path .)
+  GENERATOR=$(cfg generator auto)
+  GEN_COMMAND=$(cfg command)
+  BRANCH=$(cfg branch)
+  [ -n "$BRANCH" ] || BRANCH=$(default_branch)
+  [ -n "$PROJECT_KEY" ] || die "$CONFIG_NAME has no project.key"
+  STATE_FILE=$(git -C "$ROOT" rev-parse --path-format=absolute --git-path cyberplux-sbom.state)
+  return 0
+}
+
+default_branch() {
+  local b
+  b=$(git -C "$ROOT" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
+  [ -n "$b" ] && { printf '%s' "${b#origin/}"; return; }
+  printf 'main'
+}
+
+api_key() {
+  if [ -n "${CYBERPLUX_API_KEY:-}" ]; then printf '%s' "$CYBERPLUX_API_KEY"; return; fi
+  [ -r "$KEY_FILE" ] && { tr -d '[:space:]' < "$KEY_FILE"; return; }
+  return 1
+}
+
+sha256() { if command -v sha256sum >/dev/null; then sha256sum | cut -d' ' -f1; else shasum -a 256 | cut -d' ' -f1; fi; }
+
+# Fingerprint of every lockfile under the scan path, plus the config itself.
+fingerprint() {
+  local specs=() f
+  for f in $LOCKFILES; do specs+=(":(glob)$SCAN_PATH/**/$f"); done
+  {
+    printf 'cfg %s %s %s %s\n' "$PROJECT_KEY" "$ENVIRONMENT" "$TEAM_ID" "$SCAN_PATH"
+    git -C "$ROOT" ls-files -co --exclude-standard -- "${specs[@]}" | LC_ALL=C sort | while IFS= read -r f; do
+      printf '%s %s\n' "$f" "$(sha256 < "$ROOT/$f")"
+    done
+  } | sha256
+}
+
+query_string() {
+  local q="project_key=$(urlencode "$PROJECT_KEY")&environment=$(urlencode "$ENVIRONMENT")"
+  [ -n "$TEAM_ID" ] && q="$q&team_id=$(urlencode "$TEAM_ID")"
+  printf '%s' "$q"
+}
+
+urlencode() {
+  local s=$1 out="" c i
+  for ((i = 0; i < ${#s}; i++)); do
+    c=${s:i:1}
+    case $c in [A-Za-z0-9._~-]) out+=$c ;; *) out+=$(printf '%%%02X' "'$c") ;; esac
+  done
+  printf '%s' "$out"
+}
+
+# --------------------------------------------------------------------------
+# SBOM generation
+# --------------------------------------------------------------------------
+generate_sbom() { # generate_sbom <out-file>
+  local out=$1 dir="$ROOT/$SCAN_PATH" g=$GENERATOR
+  if [ "$g" = auto ]; then
+    if command -v syft >/dev/null; then g=syft
+    elif command -v trivy >/dev/null; then g=trivy
+    elif command -v cdxgen >/dev/null; then g=cdxgen
+    elif [ -f "$dir/package-lock.json" ] && command -v npx >/dev/null; then g=cyclonedx-npm
+    else die "no SBOM generator found. Install syft (https://github.com/anchore/syft#installation), trivy or cdxgen, or set project.generator / project.command in $CONFIG_NAME"
+    fi
+  fi
+  say "Generating SBOM with $g ..."
+  case $g in
+    syft) syft scan "dir:$dir" -q -o "cyclonedx-json=$out" ;;
+    trivy) trivy fs --quiet --format cyclonedx --output "$out" "$dir" ;;
+    cdxgen) cdxgen -r -o "$out" "$dir" >/dev/null ;;
+    cyclonedx-npm) (cd "$dir" && npx --yes @cyclonedx/cyclonedx-npm --omit dev --package-lock-only --output-format JSON --output-file "$out" >/dev/null) ;;
+    command)
+      [ -n "$GEN_COMMAND" ] || die "project.generator = command needs project.command"
+      (cd "$dir" && SBOM_OUT="$out" sh -c "$GEN_COMMAND") ;;
+    *) die "unknown generator '$g' (auto, syft, trivy, cdxgen, cyclonedx-npm, command)" ;;
+  esac
+  [ -s "$out" ] || die "the generator wrote no SBOM"
+}
+
+# --------------------------------------------------------------------------
+# Commands
+# --------------------------------------------------------------------------
+cmd_login() {
+  local key
+  if [ -t 0 ]; then
+    printf 'Paste a member API key (sam_...) from %s/account/projects: ' "$BASE_URL" >&2
+    IFS= read -rs key; printf '\n' >&2
+  else
+    IFS= read -r key || true
+  fi
+  key=$(printf '%s' "$key" | tr -d '[:space:]')
+  case $key in sam_*) ;; *) die "expected a member key starting with sam_" ;; esac
+  mkdir -p "$(dirname "$KEY_FILE")"
+  (umask 077 && printf '%s\n' "$key" > "$KEY_FILE")
+  chmod 600 "$KEY_FILE"
+  say "Saved to $KEY_FILE (mode 600)."
+}
+
+cmd_init() {
+  ROOT=$(repo_root)
+  local key="" env=production team="" branch="" path=. generator=""
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --project-key) key=$2; shift 2 ;;
+      --environment) env=$2; shift 2 ;;
+      --team-id) team=$2; shift 2 ;;
+      --branch) branch=$2; shift 2 ;;
+      --path) path=$2; shift 2 ;;
+      --generator) generator=$2; shift 2 ;;
+      *) die "init: unknown option $1" ;;
+    esac
+  done
+  if [ -z "$key" ]; then
+    key=$(git -C "$ROOT" remote get-url origin 2>/dev/null | sed -E 's#^(https?://|ssh://)?([^@/]*@)?##; s#:#/#; s#\.git$##' || true)
+    [ -n "$key" ] || die "init: pass --project-key (no origin remote to derive it from)"
+  fi
+  printf '%s' "$key" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._/@:+-]{0,119}$' || die "invalid project key '$key'"
+  case $env in production|staging|development|test|other) ;; *) die "invalid environment '$env'" ;; esac
+  local f="$ROOT/$CONFIG_NAME"
+  git config -f "$f" project.key "$key"
+  git config -f "$f" project.environment "$env"
+  [ -n "$team" ] && git config -f "$f" project.team-id "$team"
+  [ -n "$branch" ] && git config -f "$f" project.branch "$branch"
+  [ "$path" != . ] && git config -f "$f" project.path "$path"
+  [ -n "$generator" ] && git config -f "$f" project.generator "$generator"
+  say "Wrote $f (no secrets; commit it so CI and teammates use the same project)."
+  cat "$f" >&2
+}
+
+# Minimal MCP client over streamable HTTP: initialize, then one tools/call.
+mcp_call() { # mcp_call <tool> <json-arguments>
+  local key=$1 tool=$2 args=$3 hdr body sid resp
+  hdr=$(mktemp)
+  local common=(-sS -X POST "$BASE_URL/api/account/mcp" -H "Authorization: Bearer $key"
+    -H "Content-Type: application/json" -H "Accept: application/json, text/event-stream")
+  curl "${common[@]}" -D "$hdr" -o /dev/null --fail-with-body \
+    --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"cyberplux-sbom","version":"'"$VERSION"'"}}}' \
+    || { rm -f "$hdr"; die "MCP initialize failed (check the key and $BASE_URL)"; }
+  sid=$(tr -d '\r' < "$hdr" | awk -F': ' 'tolower($1)=="mcp-session-id"{print $2}'); rm -f "$hdr"
+  local extra=(); [ -n "$sid" ] && extra=(-H "Mcp-Session-Id: $sid")
+  curl "${common[@]}" ${extra[@]+"${extra[@]}"} -o /dev/null --data '{"jsonrpc":"2.0","method":"notifications/initialized"}' || true
+  body='{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"'"$tool"'","arguments":'"$args"'}}'
+  resp=$(curl "${common[@]}" ${extra[@]+"${extra[@]}"} --data "$body") || die "MCP $tool request failed"
+  # SSE ("data: {...}") or plain JSON; print the tool's text content when jq is available.
+  resp=$(printf '%s\n' "$resp" | sed -n 's/^data: //p' | tail -n1 | grep . || printf '%s' "$resp")
+  if command -v jq >/dev/null; then
+    printf '%s' "$resp" | jq -r 'if .error then "error: \(.error.message)" else (.result.content[]?.text // .) end'
+    printf '%s' "$resp" | jq -e '(.error == null) and (.result.isError != true)' >/dev/null
+  else
+    printf '%s\n' "$resp"
+    case $resp in *'"isError":true'*|*'"error":{'*) return 1 ;; esac
+  fi
+}
+
+json_str() { # JSON string for values already restricted to safe characters
+  case $1 in *'"'*|*'\'*) die "value contains a quote or backslash: $1" ;; esac
+  printf '"%s"' "$1"
+}
+
+cmd_register() {
+  load_config || die "no $CONFIG_NAME here; run: cyberplux-sbom init"
+  local key name="" repo=""
+  key=$(api_key) || die "no API key; run: cyberplux-sbom login (or set CYBERPLUX_API_KEY)"
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --name) name=$2; shift 2 ;;
+      --repository-url) repo=$2; shift 2 ;;
+      *) die "register: unknown option $1" ;;
+    esac
+  done
+  local args="{\"project_key\":$(json_str "$PROJECT_KEY"),\"environment\":$(json_str "$ENVIRONMENT")"
+  [ -n "$TEAM_ID" ] && args="$args,\"team_id\":$(json_str "$TEAM_ID")"
+  [ -n "$name" ] && args="$args,\"name\":$(json_str "$name")"
+  [ -n "$repo" ] && args="$args,\"repository_url\":$(json_str "$repo")"
+  args="$args}"
+  mcp_call "$key" register_project "$args"
+}
+
+cmd_sync() {
+  local if_changed=0 any_branch=0 dry=0
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --if-changed) if_changed=1 ;;
+      --any-branch) any_branch=1 ;;
+      --dry-run) dry=1 ;;
+      --quiet) QUIET=1 ;;
+      *) die "sync: unknown option $1" ;;
+    esac
+    shift
+  done
+  if ! load_config; then
+    [ "$if_changed" = 1 ] && exit 0   # hooks: repo not opted in
+    die "no $CONFIG_NAME here; run: cyberplux-sbom init"
+  fi
+  if [ "$any_branch" = 0 ] && [ "$BRANCH" != "*" ]; then
+    local cur; cur=$(git -C "$ROOT" branch --show-current)
+    if [ "$cur" != "$BRANCH" ]; then
+      [ "$if_changed" = 1 ] && exit 0
+      die "on branch '${cur:-detached}', but $ENVIRONMENT tracks '$BRANCH'. Uploading would replace the $ENVIRONMENT package list with unmerged dependencies; use --any-branch to do it anyway"
+    fi
+  fi
+  local fp; fp=$(fingerprint)
+  if [ "$if_changed" = 1 ] && [ -f "$STATE_FILE" ] && [ "$(cut -d' ' -f1 "$STATE_FILE")" = "$fp" ]; then
+    exit 0
+  fi
+  local key=""
+  if [ "$dry" = 0 ]; then
+    key=$(api_key) || die "no API key; run: cyberplux-sbom login (or set CYBERPLUX_API_KEY)"
+  fi
+  SYNC_TMP=$(mktemp -d); trap 'rm -rf "$SYNC_TMP"' EXIT
+  local tmp=$SYNC_TMP
+  generate_sbom "$tmp/sbom.json"
+  local url="$BASE_URL/api/account/v1/sbom?$(query_string)"
+  if [ "$dry" = 1 ]; then
+    say "Dry run: would POST $(wc -c < "$tmp/sbom.json" | tr -d ' ') bytes (gzipped) to $url"
+    return 0
+  fi
+  gzip -c "$tmp/sbom.json" > "$tmp/sbom.json.gz"
+  local code
+  code=$(curl -sS -o "$tmp/resp" -w '%{http_code}' -X POST "$url" \
+    -H "Authorization: Bearer $key" -H "Content-Type: application/json" -H "Content-Encoding: gzip" \
+    -H "User-Agent: cyberplux-sbom/$VERSION" --data-binary "@$tmp/sbom.json.gz") || die "upload request failed"
+  if [ "$code" != 200 ]; then
+    local hint=""
+    [ "$code" = 404 ] && hint=" (is the project registered? run: cyberplux-sbom register)"
+    die "upload failed: HTTP $code $(cat "$tmp/resp")$hint"
+  fi
+  printf '%s %s\n' "$fp" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$STATE_FILE"
+  if command -v jq >/dev/null; then
+    jq -r --arg p "$PROJECT_KEY" --arg e "$ENVIRONMENT" \
+      '"CyberPlux: synced \($p) (\($e)): \(.packages) packages (\(.direct) direct) from \(.format) SBOM; advisories now matching: \(.alerts.affected) affected, \(.alerts.possible) possible" + (if (.skipped_without_purl // 0) > 0 then "; \(.skipped_without_purl) components skipped without purl" else "" end) + ". OSV.dev results follow within a minute."' "$tmp/resp"
+  else
+    printf 'CyberPlux: synced %s (%s): %s\n' "$PROJECT_KEY" "$ENVIRONMENT" "$(cat "$tmp/resp")"
+  fi
+}
+
+cmd_status() {
+  load_config || { echo "No $CONFIG_NAME in $(repo_root). Run: cyberplux-sbom init"; return 0; }
+  echo "Site:        $BASE_URL"
+  echo "Project:     $PROJECT_KEY ($ENVIRONMENT)${TEAM_ID:+, team $TEAM_ID}"
+  echo "Branch:      $BRANCH (current: $(git -C "$ROOT" branch --show-current))"
+  echo "Generator:   $GENERATOR"
+  if [ -n "${CYBERPLUX_API_KEY:-}" ]; then echo "API key:     CYBERPLUX_API_KEY"
+  elif [ -r "$KEY_FILE" ]; then echo "API key:     $KEY_FILE"
+  else echo "API key:     missing (cyberplux-sbom login)"; fi
+  if [ -f "$STATE_FILE" ]; then
+    echo "Last sync:   $(cut -d' ' -f2 "$STATE_FILE")"
+    [ "$(cut -d' ' -f1 "$STATE_FILE")" = "$(fingerprint)" ] && echo "Lockfiles:   unchanged since last sync" || echo "Lockfiles:   CHANGED since last sync"
+  else
+    echo "Last sync:   never (from this clone)"
+  fi
+}
+
+cmd_install_git_hooks() {
+  ROOT=$(repo_root)
+  local dir self; dir=$(git -C "$ROOT" rev-parse --path-format=absolute --git-path hooks)
+  self=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")
+  mkdir -p "$dir"
+  cp "$self" "$dir/cyberplux-sbom"; chmod +x "$dir/cyberplux-sbom"
+  local h marker="# cyberplux-sbom"
+  for h in post-commit post-merge post-rewrite; do
+    local f="$dir/$h"
+    if [ -f "$f" ] && grep -q "$marker" "$f"; then continue; fi
+    [ -f "$f" ] || printf '#!/bin/sh\n' > "$f"
+    # Background, so commits and pulls never wait on SBOM generation.
+    printf '%s\n(cd "$(git rev-parse --show-toplevel)" && "$(git rev-parse --git-path hooks)/cyberplux-sbom" sync --if-changed --quiet >>"$(git rev-parse --git-path cyberplux-sbom.log)" 2>&1 &) %s\n' "$marker" "$marker" >> "$f"
+    chmod +x "$f"
+  done
+  say "Installed post-commit, post-merge and post-rewrite hooks in $dir. Log: $(git -C "$ROOT" rev-parse --git-path cyberplux-sbom.log)"
+}
+
+case ${1:-help} in
+  login) shift; cmd_login "$@" ;;
+  init) shift; cmd_init "$@" ;;
+  register) shift; cmd_register "$@" ;;
+  sync) shift; cmd_sync "$@" ;;
+  status) shift; cmd_status ;;
+  install-git-hooks) shift; cmd_install_git_hooks ;;
+  version|--version) echo "cyberplux-sbom $VERSION" ;;
+  help|-h|--help) sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' ;;
+  *) die "unknown command '$1' (try: help)" ;;
+esac

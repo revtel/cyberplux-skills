@@ -1,0 +1,9 @@
+{
+  "name": "cyberplux",
+  "version": "0.1.0",
+  "description": "Keep your project's dependency list (SBOM) on CyberPlux in sync, so advisories and known vulnerabilities in your exact versions reach you.",
+  "homepage": "https://cyberplux.com",
+  "repository": "https://github.com/alanfeng99/cyberplux-skills",
+  "license": "MIT",
+  "keywords": ["sbom", "cyclonedx", "spdx", "dependencies", "vulnerabilities", "security"]
+}

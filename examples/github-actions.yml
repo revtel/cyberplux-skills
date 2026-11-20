@@ -1,0 +1,35 @@
+# .github/workflows/cyberplux-sbom.yml
+# Uploads the SBOM whenever a lockfile changes on the deployed branch.
+# Add a repository secret CYBERPLUX_API_KEY (member key from https://cyberplux.com/account/projects).
+name: CyberPlux SBOM
+on:
+  push:
+    branches: [main]
+    paths:
+      - "**/package-lock.json"
+      - "**/pnpm-lock.yaml"
+      - "**/yarn.lock"
+      - "**/bun.lock"
+      - "**/poetry.lock"
+      - "**/uv.lock"
+      - "**/requirements*.txt"
+      - "**/go.sum"
+      - "**/Cargo.lock"
+      - "**/Gemfile.lock"
+      - "**/composer.lock"
+      - ".cyberplux"
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * 1" # weekly, in case base images or unpinned deps moved
+permissions:
+  contents: read
+jobs:
+  sbom:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # Pin to a commit SHA in production use.
+      - uses: alanfeng99/cyberplux-skills@v0
+        with:
+          api-key: ${{ secrets.CYBERPLUX_API_KEY }}
+          # register: true   # first run only, if the project is not registered yet

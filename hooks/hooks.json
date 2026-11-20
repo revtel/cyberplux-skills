@@ -1,0 +1,12 @@
+{
+  "description": "Upload a fresh SBOM to CyberPlux when lockfiles change (only in repositories with a .cyberplux file)",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/stop-sync.sh", "timeout": 180 }
+        ]
+      }
+    ]
+  }
+}

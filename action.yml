@@ -1,0 +1,63 @@
+name: CyberPlux SBOM sync
+description: Generate a CycloneDX SBOM and upload it to CyberPlux, replacing the project's package list
+branding: { icon: shield, color: blue }
+inputs:
+  api-key:
+    description: CyberPlux member API key (sam_...). Pass a secret, e.g. secrets.CYBERPLUX_API_KEY
+    required: true
+  project-key:
+    description: Project key. Defaults to the committed .cyberplux file, or github.com/<owner>/<repo>
+    required: false
+  environment:
+    description: production, staging, development, test or other (default from .cyberplux, else production)
+    required: false
+  team-id:
+    description: Team id, for a team project
+    required: false
+  path:
+    description: Subdirectory to scan
+    required: false
+  generator:
+    description: auto, syft, trivy, cdxgen, cyclonedx-npm or command
+    required: false
+  register:
+    description: Create / update the project before uploading (needed once)
+    required: false
+    default: "false"
+  url:
+    description: CyberPlux base URL
+    required: false
+    default: https://cyberplux.com
+runs:
+  using: composite
+  steps:
+    - name: Install syft
+      id: syft
+      uses: anchore/sbom-action/download-syft@v0
+    - name: Upload SBOM
+      shell: bash
+      env:
+        CYBERPLUX_API_KEY: ${{ inputs.api-key }}
+        CYBERPLUX_URL: ${{ inputs.url }}
+        SYFT: ${{ steps.syft.outputs.cmd }}
+        IN_KEY: ${{ inputs.project-key }}
+        IN_ENV: ${{ inputs.environment }}
+        IN_TEAM: ${{ inputs.team-id }}
+        IN_PATH: ${{ inputs.path }}
+        IN_GEN: ${{ inputs.generator }}
+        IN_REGISTER: ${{ inputs.register }}
+        REPO: ${{ github.server_url }}/${{ github.repository }}
+      run: |
+        set -euo pipefail
+        [ -n "${SYFT:-}" ] && export PATH="$(dirname "$SYFT"):$PATH"
+        cli="$GITHUB_ACTION_PATH/skills/cyberplux-sbom-sync/scripts/cyberplux-sbom"
+        if [ ! -f .cyberplux ] || [ -n "$IN_KEY" ]; then
+          args=(--project-key "${IN_KEY:-${REPO#https://}}" --environment "${IN_ENV:-production}")
+          [ -n "$IN_TEAM" ] && args+=(--team-id "$IN_TEAM")
+          [ -n "$IN_PATH" ] && args+=(--path "$IN_PATH")
+          [ -n "$IN_GEN" ] && args+=(--generator "$IN_GEN")
+          "$cli" init "${args[@]}"
+        fi
+        [ "$IN_REGISTER" = true ] && "$cli" register --repository-url "$REPO"
+        # The workflow trigger decides which branch syncs.
+        "$cli" sync --any-branch | tee -a "$GITHUB_STEP_SUMMARY"

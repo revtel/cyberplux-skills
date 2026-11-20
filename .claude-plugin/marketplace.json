@@ -1,0 +1,11 @@
+{
+  "name": "cyberplux",
+  "owner": { "name": "CyberPlux" },
+  "plugins": [
+    {
+      "name": "cyberplux",
+      "source": "./",
+      "description": "SBOM / dependency sync skill and lockfile-change hook for CyberPlux"
+    }
+  ]
+}
