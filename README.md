@@ -1,3 +1,10 @@
+<p>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/cyberplux-logo-reverse.png">
+    <img src="assets/cyberplux-logo.png" alt="CyberPlux" width="360">
+  </picture>
+</p>
+
 # CyberPlux agent skills
 
 **繁體中文** | [English](README.en.md)
