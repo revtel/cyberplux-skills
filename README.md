@@ -18,8 +18,25 @@ CyberPlux 是資安通報服務。它知道專案實際安裝的套件版本後�
 
 通知準不準，取決於套件清單是不是最新的。這個 repo 負責讓清單跟著 lockfile 走。
 
+## CyberPlux 提供什麼
+
+[CyberPlux](https://cyberplux.com) 由忻旅科技營運，給台灣企業負責 IT 與資安的人看。通報說明發生了什麼、後續怎麼發展、該怎麼修；事實句都附來源。帳號免費，用 Email 收登入連結，不需要密碼。
+
+| 服務 | 做什麼 |
+|---|---|
+| [資安通報](https://cyberplux.com/advisories) | 漏洞、攻擊事件與重大訊息。繁體中文為主，並有英文版。 |
+| [威脅地圖](https://cyberplux.com/stats) | 近一段時間的事件地圖與全站統計。 |
+| [資安學院與名詞](https://cyberplux.com/academy) | 寫給非資安背景的基礎知識與名詞解釋。 |
+| 通報通知 | Email（即時、每日或每週），以及 LINE、Slack、Microsoft Teams。可依嚴重度、事件類型、國家、廠商與產業篩選。 |
+| 系統清單與修補任務 | 登錄在用的廠商、產品與版本。新通報影響到它們時通知你，並可轉成有期限的修補任務，印出處理報告。同事可組成團隊共用。 |
+| 專案與 SBOM | 這個 repo 做的事。用 AI agent、git hook 或 CI 把實際安裝的套件清單送到 CyberPlux，比對通報與 [OSV.dev](https://osv.dev)。 |
+| [網站資安檢測](https://cyberplux.com/account/audits) | 送出網址可得初階結果。驗證網域後做進階檢測，由資安人員複核並交付報告。 |
+| [滲透測試](https://cyberplux.com/pentest) | 以 DNS TXT 證明你管理該網域後申請。ARTEX 自動掃描加人工複查，逐件審查後才測試。 |
+| [資安方案](https://cyberplux.com/solutions) | 需要有人協助時，用[諮詢單](https://cyberplux.com/contact)轉介工程師或合作團隊。列入名單不代表本站背書。 |
+
 ## 目錄
 
+- [CyberPlux 提供什麼](#cyberplux-提供什麼)
 - [內容](#內容)
 - [運作方式](#運作方式)
 - [需要什麼](#需要什麼)

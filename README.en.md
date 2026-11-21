@@ -18,8 +18,25 @@ CyberPlux is a security advisory service. Once it knows the exact package versio
 
 The alerts are only as good as the package list. This repository makes sure the list follows your lockfiles.
 
+## What CyberPlux offers
+
+[CyberPlux](https://cyberplux.com) is operated by RevtelTech for the people who look after IT and security at companies in Taiwan. An advisory says what happened, how it developed and how to fix it, and every factual sentence cites a source. An account is free: you get a sign-in link by email, and there is no password.
+
+| Service | What it does |
+|---|---|
+| [Advisories](https://cyberplux.com/advisories) | Vulnerabilities, attacks and material disclosures, in Traditional Chinese first, with an English version. |
+| [Threat map](https://cyberplux.com/stats) | A map of recent incidents and site-wide statistics. |
+| [Academy and glossary](https://cyberplux.com/academy) | The basics, written for readers without a security background. |
+| Alerts | Email (instant, daily or weekly), plus LINE, Slack and Microsoft Teams. Filter by severity, incident type, country, vendor and industry. |
+| Systems and patch tasks | Register the vendors, products and versions you run. CyberPlux notifies you when a new advisory affects them, and you can turn that into a dated patch task and a report for a manager. Teammates can share one list. |
+| Projects and SBOMs | What this repository does. An AI agent, a git hook or CI sends the packages actually installed, and CyberPlux matches them to advisories and [OSV.dev](https://osv.dev). |
+| [Website check](https://cyberplux.com/account/audits) | Submit a URL for a basic result. After you prove you control the domain, an advanced check is reviewed by a person and delivered as a report. |
+| [Penetration test](https://cyberplux.com/pentest) | Apply after a DNS TXT record shows you administer the domain. An ARTEX scan plus a human review, and each request is approved before any test starts. |
+| [Solutions](https://cyberplux.com/solutions) | When you need someone to do the work, an [enquiry](https://cyberplux.com/contact) is passed to an engineer or a partner team. A listing is not an endorsement. |
+
 ## Contents
 
+- [What CyberPlux offers](#what-cyberplux-offers)
 - [What is in this repository](#what-is-in-this-repository)
 - [How it works](#how-it-works)
 - [Requirements](#requirements)

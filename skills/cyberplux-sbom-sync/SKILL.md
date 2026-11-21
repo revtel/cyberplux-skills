@@ -53,7 +53,7 @@ Prefer the SBOM of what is actually deployed. For a container image, use `comman
 | HTTP 401 | Key revoked or mistyped: create a new one, `login` again |
 | HTTP 404 `project_not_found` | Not registered with this key / team: `register` (or MCP `register_project`) |
 | HTTP 422 `too_many_components` | Over 5000 packages: scope `--path` to the deployed app, or use a production-only generator |
-| HTTP 413 | SBOM over 40 MB decompressed: same as above |
+| HTTP 413 | The upload is over 10 MB, or over 20 MB after gunzip. The host also refuses a request body over 4.5 MB, so keep the gzipped body under that. Scope `--path`, or use a production-only generator |
 | `skipped without purl` | Components the generator could not identify; usually vendored files, safe to ignore |
 | HTTP 429 | 60 requests/min per key; wait a minute |
 
